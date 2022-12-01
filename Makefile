@@ -24,3 +24,10 @@ $(MAIN): $(OBJS)
 
 .c.o:
 	$(CC) $(CFLAGS) -c $< -o $@
+
+update:
+	./update-chnlist.sh
+	./update-chnroute6.sh
+	./update-chnroute.sh
+	./update-gfwlist.sh
+	sudo cp *.ipset *.txt /usr/local/etc
