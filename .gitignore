@@ -5,3 +5,7 @@ chinadns-ng
 .vscode/
 test.c
 test
+chnroute.ipset
+chnroute6.ipset
+gfwlist.txt
+chnlist.txt
