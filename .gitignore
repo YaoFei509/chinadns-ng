@@ -5,3 +5,4 @@ chinadns-ng
 .vscode/
 test.c
 test
+*.nftset
