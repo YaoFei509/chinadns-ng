@@ -54,3 +54,4 @@ update:
 	./update-chnroute.sh
 	./update-gfwlist.sh
 	sudo cp *.ipset *.txt /usr/local/etc
+	sudo systemctl restart chinadns-ng
