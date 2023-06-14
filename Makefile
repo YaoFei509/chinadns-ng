@@ -38,9 +38,16 @@ all: $(MAIN)
 install: $(MAIN)
 	install -d $(DESTDIR)
 	install -m 0755 $(MAIN) $(DESTDIR)
+	install -m 0755 ipset-*.sh nft-*.sh $(DESTDIR)
+	cp chinadns-ng.service /etc/systemd/system/
+	systemctl daemon-reload
+	systemctl enable --now chinadns-ng.service
+	cp nftables.conf /etc
 
 uninstall:
 	$(RM) $(DESTDIR)/$(MAIN)
+	$(RM) $(DESTDIR)/ipset-*.sh
+	$(RM) $(DESTDIR)/net-*.sh
 
 clean:
 	$(RM) *.o *.gch $(MAIN)
@@ -55,6 +62,8 @@ update:
 	./update-chnlist.sh
 	./update-chnroute6.sh
 	./update-chnroute.sh
+	./update-chnroute6-nft.sh
+	./update-chnroute-nft.sh
 	./update-gfwlist.sh
-	sudo cp *.ipset *.txt /usr/local/etc
+	sudo cp *.nftset *.ipset *.txt /usr/local/etc
 	sudo systemctl restart chinadns-ng
