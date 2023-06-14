@@ -8,4 +8,5 @@ test
 *.ipset
 gfwlist.txt
 chnlist.txt
-*.nftset
+chnroute.nftset
+chnroute6.nftset
