@@ -6,9 +6,9 @@ After=network-online.target
 [Service]
 Type=simple
 DynamicUser=true
-#ipset持久化
-ExecStartPre=/bin/bash /usr/local/bin/ipset-start.sh
-ExecStopPost=/bin/bash /usr/local/bin/ipset-stop.sh
+#nft持久化
+ExecStartPre=/bin/bash /usr/local/bin/nft-start.sh
+ExecStopPost=/bin/bash /usr/local/bin/nft-stop.sh
 User=root
 Group=root
 ExecStart=/usr/local/bin/chinadns-ng -l 53533 \
@@ -16,8 +16,9 @@ ExecStart=/usr/local/bin/chinadns-ng -l 53533 \
 	-c 114.114.114.114,116.228.111.118 \
 	-g /usr/local/etc/gfwlist.txt \
 	-m /usr/local/etc/chnlist.txt \
-	-a=chnip4,chnip6 \
-	-A gfwip4,gfwip6 \
+	-4 inet@global@chnroute -6 inet@global@chnroute6 \
+	-a inet@nat@chnip4,inet@nat@chnip6 \
+	-A inet@nat@gfwip4,inet@nat@gfwip6 \
 	--reuse-port 
 
 [Install]
