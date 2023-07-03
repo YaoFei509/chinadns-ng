@@ -60,10 +60,8 @@ $(MAIN): $(OBJS)
 
 update:
 	./update-chnlist.sh
-	./update-chnroute6.sh
-	./update-chnroute.sh
 	./update-chnroute6-nft.sh
 	./update-chnroute-nft.sh
 	./update-gfwlist.sh
-	sudo cp *.nftset *.ipset *.txt /usr/local/etc
+	sudo cp *.nftset *.txt /usr/local/etc
 	sudo systemctl restart chinadns-ng
