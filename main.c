@@ -377,6 +377,10 @@ static void handle_timeout_event(struct queryctx *context) {
 int main(int argc, char *argv[]) {
     signal(SIGPIPE, SIG_IGN);
     setvbuf(stdout, NULL, _IOLBF, 256);
+
+    /* setting default values for TZ */
+    setenv("TZ", ":/etc/localtime", 0);
+
     opt_parse(argc, argv);
 
     net_init();
