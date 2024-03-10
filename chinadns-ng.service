@@ -11,7 +11,7 @@ ExecStartPre=/bin/bash /usr/local/bin/nft-start.sh
 ExecStopPost=/bin/bash /usr/local/bin/nft-stop.sh
 User=root
 Group=root
-ExecStart=/usr/local/bin/chinadns-ng -l 53533 \
+ExecStart=/usr/local/bin/chinadns-ng -b :: -l 53533 \
 	-t 127.0.0.1#5553,127.0.0.1#60053 \
 	-c 114.114.114.114,116.228.111.118 \
 	-g /usr/local/etc/gfwlist.txt \
@@ -21,5 +21,7 @@ ExecStart=/usr/local/bin/chinadns-ng -l 53533 \
 	-A inet@nat@gfwip4,inet@nat@gfwip6 \
 	--reuse-port 
 
+# SH Mobile
+# 211.136.150.50,211.136.150.66 \
 [Install]
 WantedBy=multi-user.target
