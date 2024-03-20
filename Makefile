@@ -58,7 +58,9 @@ clean:
 $(MAIN): $(OBJS)
 	$(CC) $(LDFLAGS) -o $(MAIN) $(OBJS) $(LDLIBS)
 
-update:
+update: export HTTPS_PROXY = socks5h://127.0.0.1:1080
+
+update: 
 	./update-chnlist.sh
 	./update-chnroute6-nft.sh
 	./update-chnroute-nft.sh
