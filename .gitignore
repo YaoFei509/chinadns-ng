@@ -10,3 +10,8 @@ gfwlist.txt
 chnlist.txt
 chnroute.nftset
 chnroute6.nftset
+zig-out/
+zig-cache/
+dep/openssl-*
+dep/mimalloc-*
+dep/wolfssl-*

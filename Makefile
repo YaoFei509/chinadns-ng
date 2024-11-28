@@ -61,9 +61,9 @@ $(MAIN): $(OBJS)
 update: export HTTPS_PROXY = socks5h://127.0.0.1:1080
 
 update: 
-	./update-chnlist.sh
-	./update-chnroute6-nft.sh
-	./update-chnroute-nft.sh
-	./update-gfwlist.sh
-	sudo cp *.nftset *.txt /usr/local/etc
+	./res/update-chnlist.sh
+	./res/update-chnroute6-nft.sh
+	./res/update-chnroute-nft.sh
+	./res/update-gfwlist.sh
+	sudo cp res/*.nftset res/*.txt /usr/local/etc
 	sudo systemctl restart chinadns-ng

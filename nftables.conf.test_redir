@@ -1,0 +1,76 @@
+#!/usr/sbin/nft -f
+
+flush ruleset
+
+table inet filter {
+	chain input {
+		type filter hook input priority filter; policy accept;
+	}
+        chain forward {
+                type filter hook forward priority filter; policy accept;
+                tcp flags & (syn | rst) == syn tcp option maxseg size set rt mtu
+	}
+	chain output {
+		type filter hook output priority filter; policy accept;
+	}
+}
+
+table inet nat {
+
+	set chnip4 {
+		type ipv4_addr
+		flags interval
+	}
+
+	set chnip6 {
+		type ipv6_addr
+		flags interval
+	}
+
+	set gfwip4 {
+		type ipv4_addr
+		flags interval
+	}
+
+	set gfwip6 {
+		type ipv6_addr
+		flags interval
+	}
+
+	define private_list = {
+		0.0.0.0/8,
+		10.0.0.0/8,
+		127.0.0.0/8,
+		169.254.0.0/16,
+		172.16.0.0/12,
+		192.168.0.0/16,
+		224.0.0.0/4,
+		240.0.0.0/4
+	}
+
+	chain proxy {
+		ip daddr $private_list return
+		ip daddr @chnip4 return
+		ip daddr != @gfwip4 return
+		ip6 daddr { f000::/4 } return
+		ip6 daddr @chnip6 return
+		#ip  daddr @gfwip4 protocol tcp redirect to :60080
+		ip protocol tcp redirect to :60080
+	}
+
+        chain prerouting {
+                type nat hook prerouting priority filter; policy accept;
+    		goto proxy
+        }
+
+        chain output {
+                type nat hook output priority filter; policy accept;
+    		goto proxy
+        }
+
+        chain postrouting {
+                type nat hook postrouting priority srcnat; policy accept;
+#                iifname tun0 oif end0 masquerade
+#                iifname tun0 oifname "wlan0" masquerade
+        }
+}
