@@ -71,7 +71,7 @@ u16 dns_truncate(const void *noalias msg, ssize_t len, void *noalias out);
 u16 dns_empty_reply(void *noalias msg, int qnamelen);
 
 /* check query msg, `ascii_name` used to get domain name */
-bool dns_check_query(const void *noalias msg, ssize_t len, char *noalias ascii_name, int *noalias p_qnamelen);
+bool dns_check_query(void *noalias msg, ssize_t len, char *noalias ascii_name, int *noalias p_qnamelen);
 
 /* check reply msg, `ascii_name` used to get domain name */
 bool dns_check_reply(void *noalias msg, ssize_t len, char *noalias ascii_name, int *noalias p_qnamelen, u16 *noalias p_newlen);
@@ -89,10 +89,10 @@ int dns_test_ip(const void *noalias msg, ssize_t len, int qnamelen, const struct
 void dns_add_ip(const void *noalias msg, ssize_t len, int qnamelen, struct ipset_addctx *noalias ctx);
 
 /* return -1 if failed */
-s32 dns_get_ttl(const void *noalias msg, ssize_t len, int qnamelen, s32 nodata_ttl);
+i32 dns_get_ttl(const void *noalias msg, ssize_t len, int qnamelen, i32 nodata_ttl);
 
 /* it should not fail because it has been checked by `get_ttl` */
-void dns_update_ttl(void *noalias msg, ssize_t len, int qnamelen, s32 ttl_change);
+void dns_update_ttl(void *noalias msg, ssize_t len, int qnamelen, i32 ttl_change);
 
 /*
 * `levels`: the level of the domain to get (8 bools)
@@ -105,5 +105,7 @@ int dns_qname_domains(const void *noalias msg, int qnamelen, u8 interest_levels,
 
 /* "google.com" => {6:google 3:com 0}, return 0 if failed */
 size_t dns_ascii_to_wire(const char *noalias ascii_name, size_t ascii_len, char buf[noalias DNS_NAME_WIRE_MAXLEN], u8 *noalias p_level);
+
+bool dns_wire_to_ascii(const char *noalias wire_name, int wire_len, char buf[noalias DNS_NAME_MAXLEN + 1]);
 
 void dns_make_reply(void *noalias rmsg, const void *noalias qmsg, int qnamelen, const void *noalias answer, size_t answerlen, u16 answer_n);

@@ -48,7 +48,7 @@ pub inline fn is_tc(msg: []const u8) bool {
     return c.dns_is_tc(msg.ptr);
 }
 
-/// return the truncated msg (ptr to static buffer)
+/// return the truncated msg (global static buffer)
 pub inline fn truncate(msg: []const u8) []u8 {
     const res_msg = cc.static_buf(c.DNS_QMSG_MAXSIZE);
     const len = c.dns_truncate(msg.ptr, cc.to_isize(msg.len), res_msg.ptr);
@@ -64,7 +64,7 @@ pub inline fn empty_reply(msg: []u8, qnamelen: c_int) []u8 {
 /// check if the query msg is valid
 /// `ascii_name`: the buffer used to get the domain-name (ASCII-format)
 /// `p_qnamelen`: used to get the length of the domain-name (wire-format)
-pub inline fn check_query(msg: []const u8, ascii_name: ?[*]u8, p_qnamelen: *c_int) bool {
+pub inline fn check_query(msg: []u8, ascii_name: ?[*]u8, p_qnamelen: *c_int) bool {
     return c.dns_check_query(msg.ptr, cc.to_isize(msg.len), ascii_name, p_qnamelen);
 }
 
@@ -118,6 +118,10 @@ pub inline fn qname_domains(msg: []const u8, qnamelen: c_int, interest_levels: u
 pub inline fn ascii_to_wire(ascii_name: []const u8, p_buf: *[c.DNS_NAME_WIRE_MAXLEN]u8, p_level: ?*u8) ?[]u8 {
     const len = c.dns_ascii_to_wire(ascii_name.ptr, ascii_name.len, p_buf, p_level);
     return if (len > 0) p_buf[0..len] else null;
+}
+
+pub inline fn wire_to_ascii(wire_name: []const u8, p_buf: *[c.DNS_NAME_MAXLEN:0]u8) bool {
+    return c.dns_wire_to_ascii(wire_name.ptr, cc.to_int(wire_name.len), p_buf);
 }
 
 pub inline fn make_reply(rmsg: []u8, qmsg: []const u8, qnamelen: c_int, answer: []const u8, answer_n: u16) void {

@@ -3,7 +3,7 @@ const g = @import("g.zig");
 const c = @import("c.zig");
 const cc = @import("cc.zig");
 const dns = @import("dns.zig");
-const ListNode = @import("ListNode.zig");
+const Node = @import("Node.zig");
 const CacheMsg = @import("CacheMsg.zig");
 const cache_ignore = @import("cache_ignore.zig");
 const log = @import("log.zig");
@@ -11,7 +11,7 @@ const assert = std.debug.assert;
 const Bytes = cc.Bytes;
 
 /// LRU
-var _list: ListNode = undefined;
+var _list: Node = undefined;
 
 pub fn module_init() void {
     _list.init();
@@ -117,11 +117,22 @@ fn enabled() bool {
 
 fn del_nofree(cache_msg: *CacheMsg) void {
     map.del(cache_msg);
-    cache_msg.list_node.unlink();
+    cache_msg.node.unlink();
+}
+
+/// not expired or stale cache
+fn ttl_ok(ttl: i32) bool {
+    return ttl > 0 or (g.cache_stale > 0 and -ttl <= g.cache_stale);
 }
 
 /// return the cached reply msg
-pub fn get(qmsg: []const u8, qnamelen: c_int, p_ttl: *i32, p_ttl_r: *i32) ?[]const u8 {
+pub fn get(
+    qmsg: []const u8,
+    qnamelen: c_int,
+    p_ttl: *i32,
+    p_ttl_r: *i32,
+    p_add_ip: *bool,
+) ?[]const u8 {
     if (!enabled())
         return null;
 
@@ -134,9 +145,15 @@ pub fn get(qmsg: []const u8, qnamelen: c_int, p_ttl: *i32, p_ttl_r: *i32) ?[]con
     p_ttl.* = ttl;
     p_ttl_r.* = cache_msg.ttl_r;
 
-    if (ttl > 0 or (g.cache_stale > 0 and -ttl <= g.cache_stale)) {
-        // not expired, or stale cache
-        _list.move_to_head(&cache_msg.list_node);
+    // need to add ip to ipset/nftset ?
+    p_add_ip.* = if (!cache_msg.added_ip) b: {
+        cache_msg.added_ip = true;
+        break :b true;
+    } else false;
+
+    if (ttl_ok(ttl)) {
+        // not expired or stale cache
+        _list.move_to_head(&cache_msg.node);
         return cache_msg.msg();
     } else {
         // expired
@@ -144,16 +161,6 @@ pub fn get(qmsg: []const u8, qnamelen: c_int, p_ttl: *i32, p_ttl_r: *i32) ?[]con
         cache_msg.free();
         return null;
     }
-}
-
-/// call before using the cache msg
-pub fn ref(msg: []const u8) void {
-    return CacheMsg.from_msg(msg).ref();
-}
-
-/// call after using the cache msg (defer)
-pub fn unref(msg: []const u8) void {
-    return CacheMsg.from_msg(msg).unref();
 }
 
 pub fn add(msg: []const u8, qnamelen: c_int, p_ttl: *i32) bool {
@@ -172,24 +179,84 @@ pub fn add(msg: []const u8, qnamelen: c_int, p_ttl: *i32) bool {
     const cache_msg = b: {
         const question = dns.question(msg, qnamelen);
         const hashv = cc.calc_hashv(question);
-        const old_msg = map.get(question, hashv);
-        if (old_msg) |old| {
+        if (map.get(question, hashv)) |old| {
             // avoid duplicate add
             const old_ttl = old.get_ttl();
             if (std.math.absCast(ttl - old_ttl) <= 2) return false;
             del_nofree(old);
-            break :b old.reuse_or_new(msg, qnamelen, ttl, hashv);
+            break :b old.reuse(msg, qnamelen, ttl, hashv);
         } else if (map._nitems < g.cache_size) {
             break :b CacheMsg.new(msg, qnamelen, ttl, hashv);
         } else {
-            const old = CacheMsg.from_list_node(_list.tail());
+            const old = CacheMsg.from_node(_list.tail());
             del_nofree(old);
-            break :b old.reuse_or_new(msg, qnamelen, ttl, hashv);
+            break :b old.reuse(msg, qnamelen, ttl, hashv);
         }
     };
 
     map.add(cache_msg);
-    _list.link_to_head(&cache_msg.list_node);
+    _list.link_to_head(&cache_msg.node);
 
     return true;
+}
+
+/// load from db file
+pub fn load() void {
+    assert(enabled());
+
+    const src = @src();
+    const path = g.cache_db orelse return;
+
+    const mem = cc.mmap_file(path) orelse {
+        if (cc.errno() != c.ENOENT)
+            log.warn(src, "open(%s): (%d) %m", .{ path, cc.errno() });
+        return;
+    };
+    defer _ = cc.munmap(mem);
+
+    var data = mem;
+    while (CacheMsg.load(&data)) |cache_msg| {
+        map.add(cache_msg);
+        _list.link_to_tail(&cache_msg.node);
+
+        if (map._nitems >= g.cache_size) break;
+    }
+
+    log.info(src, "%zu entries from %s", .{ map._nitems, path });
+}
+
+/// dump to db file
+pub fn dump(event: enum { on_exit, on_manual }) void {
+    if (!enabled())
+        return;
+
+    const src = @src();
+
+    const path = g.cache_db orelse switch (event) {
+        .on_exit => return,
+        .on_manual => "/tmp/chinadns@cache.db",
+    };
+
+    var count: usize = 0;
+
+    const file = cc.fopen(path, "wb") orelse {
+        log.warn(src, "fopen(%s) failed: (%d) %m", .{ path, cc.errno() });
+        return;
+    };
+    defer {
+        _ = cc.fclose(file);
+        log.info(src, "%zu entries to %s", .{ count, path });
+    }
+
+    var it = _list.iterator();
+    while (it.next()) |node| {
+        const cache_msg = CacheMsg.from_node(node);
+
+        const ttl = cache_msg.get_ttl();
+        if (!ttl_ok(ttl))
+            continue;
+
+        cache_msg.dump(file);
+        count += 1;
+    }
 }

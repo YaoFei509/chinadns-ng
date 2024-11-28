@@ -1,29 +1,27 @@
 //! global variables
 
 const std = @import("std");
+const cc = @import("cc.zig");
 const ipset = @import("ipset.zig");
 const NoAAAA = @import("NoAAAA.zig");
 const DynStr = @import("DynStr.zig");
 const StrList = @import("StrList.zig");
 const EvLoop = @import("EvLoop.zig");
-const flags_op = @import("flags_op.zig");
 const Tag = @import("tag.zig").Tag;
 
-pub const Flags = enum(u8) {
-    verbose = 1 << 0,
-    reuse_port = 1 << 1,
-    noip_as_chnip = 1 << 2,
-    gfwlist_first = 1 << 3,
-    bind_tcp = 1 << 4,
-    bind_udp = 1 << 5,
-    _,
-    pub usingnamespace flags_op.get(Flags);
-};
+comptime {
+    // @compileLog("sizeof(flags)", @sizeOf(@TypeOf(flags)));
+}
 
-pub var flags: Flags = Flags.init(.{ .gfwlist_first, .bind_tcp, .bind_udp });
+pub var flags: packed struct {
+    verbose: bool = false,
+    reuse_port: bool = false,
+    noip_as_chnip: bool = false,
+    gfwlist_first: bool = true,
+} = .{};
 
 pub inline fn verbose() bool {
-    return flags.has(.verbose);
+    return flags.verbose;
 }
 
 pub var noaaaa_rule: NoAAAA = .{};
@@ -39,7 +37,13 @@ pub var chnroute_testctx: *const ipset.testctx_t = undefined;
 
 /// ["ip1", "ip2", ...]
 pub var bind_ips: StrList = .{};
-pub var bind_port: u16 = 65353;
+
+pub const BindPort = struct {
+    port: u16,
+    tcp: bool,
+    udp: bool,
+};
+pub var bind_ports: []BindPort = &.{};
 
 /// too large may cause stack overflow
 pub const TRUSTDNS_PACKET_MAX: u8 = 5;
@@ -64,8 +68,14 @@ pub var cache_refresh: u8 = 0;
 /// rcode=NOERROR && no-records
 pub var cache_nodata_ttl: u16 = 60;
 
+/// load/dump cache from/to this file
+pub var cache_db: ?cc.ConstStr = null;
+
 /// [tag:none] verdict cache size
 pub var verdict_cache_size: u16 = 0;
+
+/// load/dump verdict cache from/to this file
+pub var verdict_cache_db: ?cc.ConstStr = null;
 
 pub var evloop: EvLoop = undefined;
 

@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <sys/types.h>
+#include <signal.h>
 
 #define likely(x)	__builtin_expect(!!(x), 1)
 #define unlikely(x)	__builtin_expect(!!(x), 0)
@@ -34,22 +35,22 @@ typedef uint16_t u16;
 typedef uint32_t u32;
 typedef uint64_t u64;
 
-typedef int8_t  s8;
-typedef int16_t s16;
-typedef int32_t s32;
-typedef int64_t s64;
+typedef int8_t  i8;
+typedef int16_t i16;
+typedef int32_t i32;
+typedef int64_t i64;
 
 #define U8C  UINT8_C
 #define U16C UINT16_C
 #define U32C UINT32_C
 #define U64C UINT64_C
 
-#define S8C  INT8_C
-#define S16C INT16_C
-#define S32C INT32_C
-#define S64C INT64_C
+#define I8C  INT8_C
+#define I16C INT16_C
+#define I32C INT32_C
+#define I64C INT64_C
 
-// typedef signed char byte; /* >= 8 bits */
+typedef signed char ibyte; /* >= 8 bits */
 typedef unsigned char ubyte; /* >= 8 bits */
 typedef unsigned short ushort; /* >= 16 bits */
 typedef unsigned int uint; /* >= 16 bits */
@@ -118,14 +119,14 @@ typedef u8 bitvec_t;
 
 /* align to `n` (struct, struct member) */
 #define struct_alignto(n) \
-    __attribute__((packed,aligned(n)))
+    __attribute__((packed, aligned(n)))
 
 /* ======================================================== */
 
-/* zig is currently unable to translate the SIG_IGN/DFL/ERR macro */
+void sig_register(int sig, sighandler_t handler);
+
 const void *SIG_IGNORE(void);
 const void *SIG_DEFAULT(void);
-const void *SIG_ERROR(void);
 
 bool is_dir(const char *path);
 
@@ -134,3 +135,5 @@ ssize_t fstat_size(int fd);
 uint calc_hashv(const void *ptr, size_t len);
 
 bool has_aes(void);
+
+u64 monotime(void);

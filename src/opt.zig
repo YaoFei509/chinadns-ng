@@ -43,7 +43,9 @@ const help =
     \\ --cache-refresh <N>                  pre-refresh the cached data if TTL <= N(%)
     \\ --cache-nodata-ttl <ttl>             TTL of the NODATA response, default is 60
     \\ --cache-ignore <domain>              ignore the dns cache for this domain(suffix)
+    \\ --cache-db <path>                    dns cache persistence (from/to db file)
     \\ --verdict-cache <size>               enable verdict caching for tag:none domains
+    \\ --verdict-cache-db <path>            verdict cache persistence (from/to db file)
     \\ --hosts [path]                       load hosts file, default path is /etc/hosts
     \\ --dns-rr-ip <names>=<ips>            define local resource records of type A/AAAA
     \\ --cert-verify                        enable SSL certificate validation, default: no
@@ -136,7 +138,9 @@ const optdef_array = [_]OptDef{
     .{ .short = "",  .long = "cache-refresh",      .value = .required, .optfn = opt_cache_refresh,      },
     .{ .short = "",  .long = "cache-nodata-ttl",   .value = .required, .optfn = opt_cache_nodata_ttl,   },
     .{ .short = "",  .long = "cache-ignore",       .value = .required, .optfn = opt_cache_ignore,       },
+    .{ .short = "",  .long = "cache-db",           .value = .required, .optfn = opt_cache_db,           },
     .{ .short = "",  .long = "verdict-cache",      .value = .required, .optfn = opt_verdict_cache,      },
+    .{ .short = "",  .long = "verdict-cache-db",   .value = .required, .optfn = opt_verdict_cache_db,   },
     .{ .short = "",  .long = "hosts",              .value = .optional, .optfn = opt_hosts,              },
     .{ .short = "",  .long = "dns-rr-ip",          .value = .required, .optfn = opt_dns_rr_ip,          },
     .{ .short = "",  .long = "cert-verify",        .value = .no_value, .optfn = opt_cert_verify,        },
@@ -294,20 +298,19 @@ fn opt_bind_port(in_value: ?[]const u8) void {
     var it = std.mem.split(u8, value, "@");
 
     // port
-    const port = it.next().?;
-    g.bind_port = check_port(port) orelse invalid_optvalue(src, value);
+    const port = check_port(it.first()) orelse invalid_optvalue(src, value);
 
-    g.flags.add(.bind_tcp);
-    g.flags.add(.bind_udp);
+    var tcp = true;
+    var udp = true;
 
     // proto
     if (it.next()) |proto| {
         if (std.mem.eql(u8, proto, "tcp+udp") or std.mem.eql(u8, proto, "udp+tcp")) {
             //
         } else if (std.mem.eql(u8, proto, "tcp")) {
-            g.flags.rm(.bind_udp);
+            udp = false;
         } else if (std.mem.eql(u8, proto, "udp")) {
-            g.flags.rm(.bind_tcp);
+            tcp = false;
         } else {
             invalid_optvalue(src, value);
         }
@@ -315,6 +318,23 @@ fn opt_bind_port(in_value: ?[]const u8) void {
 
     if (it.next() != null)
         invalid_optvalue(src, value);
+
+    for (g.bind_ports) |*v| {
+        if (v.port == port) {
+            v.tcp = tcp;
+            v.udp = udp;
+            break; // found
+        }
+    } else { // not found
+        const new_n = g.bind_ports.len + 1;
+        const slice = g.allocator.realloc(g.bind_ports, new_n) catch unreachable;
+        g.bind_ports = slice[0..new_n];
+        g.bind_ports[new_n - 1] = .{
+            .port = port,
+            .tcp = tcp,
+            .udp = udp,
+        };
+    }
 }
 
 fn opt_china_dns(in_value: ?[]const u8) void {
@@ -338,7 +358,7 @@ fn opt_gfwlist_file(in_value: ?[]const u8) void {
 }
 
 fn opt_chnlist_first(_: ?[]const u8) void {
-    g.flags.rm(.gfwlist_first);
+    g.flags.gfwlist_first = false;
 }
 
 fn opt_default_tag(in_value: ?[]const u8) void {
@@ -471,10 +491,20 @@ fn opt_cache_ignore(in_value: ?[]const u8) void {
     cache_ignore.add(domain) orelse invalid_optvalue(@src(), domain);
 }
 
+fn opt_cache_db(in_value: ?[]const u8) void {
+    const path = in_value.?;
+    g.cache_db = (g.allocator.dupeZ(u8, path) catch unreachable).ptr;
+}
+
 fn opt_verdict_cache(in_value: ?[]const u8) void {
     const value = in_value.?;
     g.verdict_cache_size = str2int.parse(@TypeOf(g.verdict_cache_size), value, 10) orelse
         invalid_optvalue(@src(), value);
+}
+
+fn opt_verdict_cache_db(in_value: ?[]const u8) void {
+    const path = in_value.?;
+    g.verdict_cache_db = (g.allocator.dupeZ(u8, path) catch unreachable).ptr;
 }
 
 fn opt_hosts(in_value: ?[]const u8) void {
@@ -525,7 +555,7 @@ fn opt_repeat_times(in_value: ?[]const u8) void {
 }
 
 fn opt_noip_as_chnip(_: ?[]const u8) void {
-    g.flags.add(.noip_as_chnip);
+    g.flags.noip_as_chnip = true;
 }
 
 fn opt_fair_mode(_: ?[]const u8) void {
@@ -533,11 +563,11 @@ fn opt_fair_mode(_: ?[]const u8) void {
 }
 
 fn opt_reuse_port(_: ?[]const u8) void {
-    g.flags.add(.reuse_port);
+    g.flags.reuse_port = true;
 }
 
 fn opt_verbose(_: ?[]const u8) void {
-    g.flags.add(.verbose);
+    g.flags.verbose = true;
 }
 
 fn opt_version(_: ?[]const u8) void {
@@ -664,6 +694,11 @@ pub fn parse() void {
 
     if (g.bind_ips.is_null())
         g.bind_ips.add("127.0.0.1");
+
+    if (g.bind_ports.len == 0)
+        g.bind_ports = cc.remove_const(struct {
+            const default = &[_]g.BindPort{.{ .port = 65353, .tcp = true, .udp = true }};
+        }.default);
 
     if (groups.get_upstream_group(.chn).is_empty())
         groups.add_upstream(.chn, "114.114.114.114") orelse unreachable;

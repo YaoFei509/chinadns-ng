@@ -14,10 +14,9 @@ const server = @import("server.zig");
 const EvLoop = @import("EvLoop.zig");
 const co = @import("co.zig");
 const groups = @import("groups.zig");
-
-// TODO:
-// - alloc_only allocator
-// - vla/alloca allocator (another stack)
+const cache = @import("cache.zig");
+const verdict_cache = @import("verdict_cache.zig");
+const assert = std.debug.assert;
 
 // ============================================================================
 
@@ -32,53 +31,100 @@ pub fn panic(msg: []const u8, error_return_trace: ?*std.builtin.StackTrace, ret_
 
 // ============================================================================
 
-const _debug = builtin.mode == .Debug;
+const FnEnum = enum {
+    module_init,
+    module_deinit,
+    check_timeout,
+};
 
-const gpa_t = if (_debug) std.heap.GeneralPurposeAllocator(.{}) else void;
-var _gpa: gpa_t = undefined;
-
-const pipe_fds_t = if (_debug) [2]c_int else void;
-var _pipe_fds: pipe_fds_t = undefined;
-
-fn on_sigusr1(_: c_int) callconv(.C) void {
-    const v: u8 = 0;
-    _ = cc.write(_pipe_fds[1], std.mem.asBytes(&v));
-}
-
-fn memleak_checker() void {
-    defer co.terminate(@frame(), @frameSize(memleak_checker));
-
-    cc.pipe2(&_pipe_fds, c.O_CLOEXEC | c.O_NONBLOCK) orelse {
-        log.err(@src(), "pipe() failed: (%d) %m", .{cc.errno()});
-        @panic("pipe failed");
-    };
-    defer _ = cc.close(_pipe_fds[1]); // write end
-
-    // register sig_handler
-    _ = cc.signal(c.SIGUSR1, on_sigusr1);
-
-    const fdobj = EvLoop.Fd.new(_pipe_fds[0]);
-    defer fdobj.free(); // read end
-
-    while (true) {
-        var v: u8 = undefined;
-        _ = g.evloop.read(fdobj, std.mem.asBytes(&v)) orelse {
-            log.err(@src(), "read(%d) failed: (%d) %m", .{ fdobj.fd, cc.errno() });
-            continue;
-        };
-        log.info(@src(), "signal received, check memory leaks ...", .{});
-        _ = _gpa.detectLeaks();
+pub fn call_module_fn(comptime fn_enum: FnEnum, args: anytype) void {
+    const fn_name = comptime @tagName(fn_enum);
+    comptime var i = 0;
+    inline while (i < modules.module_list.len) : (i += 1) {
+        const module = modules.module_list[i];
+        const module_name: cc.ConstStr = modules.name_list[i];
+        if (@hasDecl(module, fn_name)) {
+            if (false) log.debug(@src(), "%s.%s()", .{ module_name, fn_name.ptr });
+            const options: std.builtin.CallOptions = .{};
+            const func = @field(module, fn_name);
+            @call(options, func, args);
+        }
     }
 }
 
 // ============================================================================
 
-/// called by EvLoop.check_timeout
-pub const check_timeout = server.check_timeout;
+const _debug = builtin.mode == .Debug;
+
+const gpa_t = if (_debug) std.heap.GeneralPurposeAllocator(.{}) else void;
+var _gpa: gpa_t = undefined;
+
+// ============================================================================
+
+var _pipe_fds: [2]c_int = undefined;
+
+fn sig_handler(sig: c_int) callconv(.C) void {
+    _ = cc.write(_pipe_fds[1], std.mem.asBytes(&sig));
+}
+
+fn sig_listener() void {
+    defer co.terminate(@frame(), @frameSize(sig_listener));
+
+    const src = @src();
+
+    cc.pipe2(&_pipe_fds, c.O_CLOEXEC | c.O_NONBLOCK) orelse {
+        log.err(src, "pipe() failed: (%d) %m", .{cc.errno()});
+        return;
+    };
+
+    // read side
+    const fdobj = EvLoop.Fd.new(_pipe_fds[0]);
+    defer fdobj.free();
+
+    // write side
+    defer _ = cc.close(_pipe_fds[1]);
+
+    // register signal handler
+    _ = cc.signal(c.SIGINT, sig_handler); // CTRL C
+    _ = cc.signal(c.SIGTERM, sig_handler); // kill <PID>
+    _ = cc.signal(c.SIGUSR1, sig_handler); // dump cache to file
+    if (_debug) _ = cc.signal(c.SIGUSR2, sig_handler); // detect memory leaks
+
+    // listening for signal
+    while (true) {
+        var sig: c_int = undefined;
+
+        g.evloop.read(fdobj, std.mem.asBytes(&sig)) catch |err| switch (err) {
+            error.eof => return log.err(src, "read(fd:%d) failed: EOF", .{fdobj.fd}),
+            error.errno => return log.err(src, "read(fd:%d) failed: (%d) %m", .{ fdobj.fd, cc.errno() }),
+        };
+
+        switch (sig) {
+            c.SIGINT, c.SIGTERM => {
+                cache.dump(.on_exit);
+                verdict_cache.dump(.on_exit);
+                cc.exit(0);
+            },
+            c.SIGUSR1 => {
+                cache.dump(.on_manual);
+                verdict_cache.dump(.on_manual);
+            },
+            c.SIGUSR2 => {
+                if (_debug)
+                    _ = _gpa.detectLeaks()
+                else
+                    unreachable;
+            },
+            else => unreachable,
+        }
+    }
+}
+
+// ============================================================================
 
 pub fn main() u8 {
     g.allocator = if (_debug) b: {
-        _gpa = gpa_t{};
+        _gpa = .{};
         break :b _gpa.allocator();
     } else std.heap.c_allocator;
 
@@ -98,9 +144,11 @@ pub fn main() u8 {
 
     // ============================================================================
 
+    g.evloop = EvLoop.init();
+
     // used only for business-independent initialization, such as global variables
-    init_all_module();
-    defer if (_debug) deinit_all_module();
+    call_module_fn(.module_init, .{});
+    defer if (_debug) call_module_fn(.module_deinit, .{});
 
     // ============================================================================
 
@@ -115,19 +163,12 @@ pub fn main() u8 {
 
     const src = @src();
 
-    const bind_proto: cc.ConstStr = if (g.flags.has_all(.{ .bind_tcp, .bind_udp }))
-        "tcp+udp"
-    else if (g.flags.has(.bind_tcp))
-        "tcp"
-    else // bind_udp
-        "udp";
-
-    for (g.bind_ips.items()) |ip|
-        log.info(
-            src,
-            "local listen addr: %s#%u@%s",
-            .{ ip, cc.to_uint(g.bind_port), bind_proto },
-        );
+    for (g.bind_ips.items()) |ip| {
+        for (g.bind_ports) |p| {
+            const proto: cc.ConstStr = if (p.tcp and p.udp) "" else if (p.tcp) "@tcp" else "@udp";
+            log.info(src, "local listen addr: %s#%u%s", .{ ip, cc.to_uint(p.port), proto });
+        }
+    }
 
     groups.on_start();
 
@@ -152,10 +193,15 @@ pub fn main() u8 {
 
         if (g.cache_nodata_ttl > 0)
             log.info(src, "cache NODATA response, TTL: %u", .{cc.to_uint(g.cache_nodata_ttl)});
+
+        cache.load();
     }
 
-    if (g.verdict_cache_size > 0)
+    if (g.verdict_cache_size > 0) {
         log.info(src, "enable verdict cache, capacity: %u", .{cc.to_uint(g.verdict_cache_size)});
+
+        verdict_cache.load();
+    }
 
     log.info(src, "response timeout of upstream: %u", .{cc.to_uint(g.upstream_timeout)});
 
@@ -163,11 +209,11 @@ pub fn main() u8 {
         log.info(src, "num of packets to trustdns: %u", .{cc.to_uint(g.trustdns_packet_n)});
 
     if (g.default_tag == .none) {
-        const action = cc.b2s(g.flags.has(.noip_as_chnip), "accept", "filter");
+        const action = cc.b2s(g.flags.noip_as_chnip, "accept", "filter");
         log.info(src, "%s no-ip reply from chinadns", .{action});
     }
 
-    if (g.flags.has(.reuse_port))
+    if (g.flags.reuse_port)
         log.info(src, "SO_REUSEPORT for listening socket", .{});
 
     if (g.verbose())
@@ -175,38 +221,11 @@ pub fn main() u8 {
 
     // ============================================================================
 
-    g.evloop = EvLoop.init();
-
     server.start();
 
-    if (_debug)
-        co.create(memleak_checker, .{});
+    co.start(sig_listener, .{});
 
     g.evloop.run();
 
     return 0;
-}
-
-fn init_all_module() void {
-    comptime var i = 0;
-    inline while (i < modules.module_list.len) : (i += 1) {
-        const module = modules.module_list[i];
-        const module_name: cc.ConstStr = modules.name_list[i];
-        if (@hasDecl(module, "module_init")) {
-            if (false) log.debug(@src(), "%s.module_init()", .{module_name});
-            module.module_init();
-        }
-    }
-}
-
-fn deinit_all_module() void {
-    comptime var i = 0;
-    inline while (i < modules.module_list.len) : (i += 1) {
-        const module = modules.module_list[i];
-        const module_name: cc.ConstStr = modules.name_list[i];
-        if (@hasDecl(module, "module_deinit")) {
-            if (false) log.debug(@src(), "%s.module_deinit()", .{module_name});
-            module.module_deinit();
-        }
-    }
 }

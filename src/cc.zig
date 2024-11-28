@@ -82,7 +82,7 @@ pub inline fn ptrdiff_u(comptime T: type, p1: [*]const T, p2: [*]const T) usize 
 
 /// `@ptrCast(P, @alignCast(alignment, ptr))`
 pub inline fn ptrcast(comptime P: type, ptr: anytype) P {
-    return @ptrCast(P, @alignCast(@alignOf(meta.Child(P)), ptr));
+    return @ptrCast(P, @alignCast(meta.alignment(P), ptr));
 }
 
 fn IntCast(comptime DestType: type) type {
@@ -151,12 +151,12 @@ pub noinline fn static_buf(size: usize) []u8 {
     return static.buf.ptr[0..size];
 }
 
-/// convert to C string (static buffer)
+/// convert to C string (global static buffer)
 pub inline fn to_cstr(str: []const u8) Str {
     return to_cstr_x(&.{str});
 }
 
-/// convert to C string (static buffer)
+/// convert to C string (global static buffer)
 pub noinline fn to_cstr_x(str_list: []const []const u8) Str {
     var total_len: usize = 0;
     for (str_list) |str|
@@ -308,6 +308,20 @@ pub fn snprintf(buffer: []u8, comptime fmt: [:0]const u8, args: anytype) [:0]u8 
 
 // ==============================================================
 
+pub extern fn fopen(path: ConstStr, mode: ConstStr) ?*FILE;
+
+/// flush(file) and close(fd)
+pub extern fn fclose(file: *FILE) c_int;
+
+/// return the number of bytes written \
+/// `res < data.len` means write error
+pub inline fn fwrite(file: *FILE, data: []const u8) usize {
+    const raw = struct {
+        extern fn fwrite(ptr: [*]const u8, size: usize, nitems: usize, file: *FILE) usize;
+    };
+    return raw.fwrite(data.ptr, 1, data.len, file);
+}
+
 pub inline fn setvbuf(file: *FILE, buffer: ?[*]u8, mode: c_int, size: usize) ?void {
     const raw = struct {
         extern fn setvbuf(file: *FILE, buffer: ?[*]u8, mode: c_int, size: usize) c_int;
@@ -317,6 +331,7 @@ pub inline fn setvbuf(file: *FILE, buffer: ?[*]u8, mode: c_int, size: usize) ?vo
 
 // ==============================================================
 
+/// unix timestamp in seconds
 pub inline fn time() c.time_t {
     const raw = struct {
         extern fn time(t: ?*c.time_t) c.time_t;
@@ -329,6 +344,12 @@ pub inline fn localtime(t: c.time_t) ?*c.struct_tm {
         extern fn localtime(t: *const c.time_t) ?*c.struct_tm;
     };
     return raw.localtime(&t);
+}
+
+/// CLOCK_MONOTONIC in milliseconds (ms). \
+/// please consider using `g.evloop.time` (faster)
+pub inline fn monotime() u64 {
+    return c.monotime();
 }
 
 // ==============================================================
@@ -386,12 +407,13 @@ pub inline fn sendto(fd: c_int, buf: []const u8, flags: c_int, addr: *const Sock
     return if (n >= 0) to_usize(n) else null;
 }
 
-pub inline fn recvfrom(fd: c_int, buf: []u8, flags: c_int, addr: *SockAddr) ?usize {
+pub inline fn recvfrom(fd: c_int, buf: []u8, flags: c_int, addr: ?*SockAddr) ?usize {
     const raw = struct {
-        extern fn recvfrom(fd: c_int, buf: [*]u8, len: usize, flags: c_int, addr: *anyopaque, addrlen: *c.socklen_t) isize;
+        extern fn recvfrom(fd: c_int, buf: [*]u8, len: usize, flags: c_int, addr: ?*anyopaque, addrlen: ?*c.socklen_t) isize;
     };
-    var addrlen: c.socklen_t = @sizeOf(SockAddr);
-    const n = raw.recvfrom(fd, buf.ptr, buf.len, flags, addr, &addrlen);
+    var len: c.socklen_t = @sizeOf(SockAddr);
+    const addrlen = if (addr != null) &len else null;
+    const n = raw.recvfrom(fd, buf.ptr, buf.len, flags, addr, addrlen);
     return if (n >= 0) to_usize(n) else null;
 }
 
@@ -408,6 +430,14 @@ pub inline fn write(fd: c_int, buf: []const u8) ?usize {
         extern fn write(fd: c_int, buf: [*]const u8, len: usize) isize;
     };
     const n = raw.write(fd, buf.ptr, buf.len);
+    return if (n >= 0) to_usize(n) else null;
+}
+
+pub inline fn writev(fd: c_int, iovec: []const iovec_t) ?usize {
+    const raw = struct {
+        extern fn writev(fd: c_int, iovec: [*]const iovec_t, iovec_n: c_int) isize;
+    };
+    const n = raw.writev(fd, iovec.ptr, to_int(iovec.len));
     return if (n >= 0) to_usize(n) else null;
 }
 
@@ -540,11 +570,8 @@ pub inline fn epoll_wait(epfd: c_int, evs: *anyopaque, n_evs: c_int, timeout: c_
 /// SIG_DFL may have address 0
 pub const sighandler_t = ?std.meta.FnPtr(fn (sig: c_int) callconv(.C) void);
 
-pub inline fn signal(sig: c_int, handler: sighandler_t) ?void {
-    const raw = struct {
-        extern fn signal(sig: c_int, handler: sighandler_t) sighandler_t;
-    };
-    return if (raw.signal(sig, handler) == SIG_ERR()) null;
+pub inline fn signal(sig: c_int, handler: sighandler_t) void {
+    return c.sig_register(sig, handler);
 }
 
 pub inline fn SIG_DFL() sighandler_t {
@@ -553,10 +580,6 @@ pub inline fn SIG_DFL() sighandler_t {
 
 pub inline fn SIG_IGN() sighandler_t {
     return @ptrCast(sighandler_t, c.SIG_IGNORE());
-}
-
-inline fn SIG_ERR() sighandler_t {
-    return @ptrCast(sighandler_t, c.SIG_ERROR());
 }
 
 // ==============================================================
@@ -656,6 +679,39 @@ pub const iovec_t = extern struct {
     iov_len: usize,
 };
 
+pub fn iovec_len(iovec: []const iovec_t) usize {
+    var len: usize = 0;
+    for (iovec) |*iov|
+        len += iov.iov_len;
+    return len;
+}
+
+pub fn iovec_dupe(iovec: []const iovec_t) []u8 {
+    const len = iovec_len(iovec);
+    const buffer = g.allocator.alloc(u8, len) catch unreachable;
+    var offset: usize = 0;
+    for (iovec) |*iov| {
+        @memcpy(buffer[offset..].ptr, iov.iov_base, iov.iov_len);
+        offset += iov.iov_len;
+    }
+    return buffer;
+}
+
+pub fn iovec_skip(iovec: *[]iovec_t, in_skip_len: usize) void {
+    var skip_len = in_skip_len;
+    while (skip_len > 0) {
+        const iov = &iovec.*[0];
+        if (skip_len >= iov.iov_len) {
+            iovec.* = iovec.*[1..];
+            skip_len -= iov.iov_len;
+        } else {
+            iov.iov_base += skip_len;
+            iov.iov_len -= skip_len;
+            return;
+        }
+    }
+}
+
 pub const msghdr_t = extern struct {
     msg_name: ?*SockAddr = null,
     msg_namelen: c.socklen_t = 0,
@@ -664,33 +720,6 @@ pub const msghdr_t = extern struct {
     msg_control: ?[*]u8 = null,
     msg_controllen: usize = 0,
     msg_flags: c_int = 0,
-
-    pub fn iov_items(self: *const msghdr_t) []iovec_t {
-        return self.msg_iov[0..self.msg_iovlen];
-    }
-
-    /// data length
-    pub fn calc_len(self: *const msghdr_t) usize {
-        var len: usize = 0;
-        for (self.iov_items()) |*iov|
-            len += iov.iov_len;
-        return len;
-    }
-
-    /// for sendmsg
-    pub fn skip_iov(self: *const msghdr_t, skip_len: usize) void {
-        assert(skip_len > 0);
-        var remain_skip = skip_len;
-        for (self.iov_items()) |*iov| {
-            if (iov.iov_len == 0) continue;
-            const n = std.math.min(iov.iov_len, remain_skip);
-            iov.iov_base += n;
-            iov.iov_len -= n;
-            remain_skip -= n;
-            if (remain_skip == 0) return;
-        }
-        unreachable;
-    }
 };
 
 pub const mmsghdr_t = extern struct {
@@ -744,6 +773,7 @@ pub inline fn munmap(mem: []const u8) ?void {
     const raw = struct {
         extern fn munmap(addr: *const anyopaque, len: usize) c_int;
     };
+    if (mem.len == 0) return; // see the mmap_file
     return if (raw.munmap(mem.ptr, mem.len) == -1) null;
 }
 
@@ -753,6 +783,7 @@ pub fn mmap_file(filename: ConstStr) ?[]const u8 {
     defer _ = close(fd);
 
     const size = fstat_size(fd) orelse return null;
+    if (size == 0) return &[_]u8{};
 
     return mmap(null, size, c.PROT_READ, c.MAP_PRIVATE, fd, 0);
 }
@@ -817,7 +848,7 @@ pub fn SSL_set_fd(ssl: *c.WOLFSSL, fd: c_int) ?void {
     return if (c.wolfSSL_set_fd(ssl, fd) == 1) {} else null;
 }
 
-/// set SNI && enable hostname validation during SSL handshake
+/// set SNI && enable cert validation during SSL handshake
 pub fn SSL_set_host(ssl: *c.WOLFSSL, host: ?ConstStr, cert_verify: bool) ?void {
     if (host) |name| {
         // tls_ext: SNI (ClientHello)
@@ -832,14 +863,6 @@ pub fn SSL_set_host(ssl: *c.WOLFSSL, host: ?ConstStr, cert_verify: bool) ?void {
     // ssl cert validation
     const mode = if (cert_verify) c.WOLFSSL_VERIFY_PEER else c.WOLFSSL_VERIFY_NONE;
     c.wolfSSL_set_verify(ssl, mode, null);
-}
-
-/// set session to be used when the TLS/SSL connection is to be established (resumption) \
-/// when the session is set, the reference count of session is incremented by 1 (owner by ssl) \
-/// after session is set, wolfSSL_SESSION_free() can be called to dereference it (release ownership)
-pub fn SSL_set_session(ssl: *c.WOLFSSL, session: *c.WOLFSSL_SESSION) void {
-    // may fail due to session timeout, don't care about it
-    _ = c.wolfSSL_set_session(ssl, session);
 }
 
 /// for SSL I/O operation
@@ -876,11 +899,6 @@ pub fn SSL_get_cipher(ssl: *c.WOLFSSL) ConstStr {
     return c.wolfSSL_get_cipher(ssl) orelse "NULL";
 }
 
-/// queries whether session resumption occurred during the handshake
-pub fn SSL_session_reused(ssl: *c.WOLFSSL) bool {
-    return c.wolfSSL_session_reused(ssl) != 0;
-}
-
 /// return the number of bytes read (> 0) \
 /// `p_err`: to save the failure reason (SSL_ERROR_*)
 pub fn SSL_read(ssl: *c.WOLFSSL, buf: []u8, p_err: *c_int) ?usize {
@@ -903,16 +921,6 @@ pub fn SSL_write(ssl: *c.WOLFSSL, buf: []const u8, p_err: *c_int) ?void {
         p_err.* = SSL_get_error(ssl, res);
         return null;
     }
-}
-
-/// the reference count of the SSL_SESSION is incremented by one \
-/// in TLSv1.3 it is recommended that each SSL_SESSION object is only used for resumption once
-pub fn SSL_get1_session(ssl: *c.WOLFSSL) ?*c.WOLFSSL_SESSION {
-    return c.wolfSSL_get1_session(ssl);
-}
-
-pub fn SSL_SESSION_free(session: *c.WOLFSSL_SESSION) void {
-    return c.wolfSSL_SESSION_free(session);
 }
 
 // ==============================================================

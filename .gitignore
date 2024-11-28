@@ -12,6 +12,9 @@ chnroute.nftset
 chnroute6.nftset
 zig-out/
 zig-cache/
+.zig-cache/
 dep/openssl-*
 dep/mimalloc-*
 dep/wolfssl-*
+tool/dns_cache_mgr
+tool/*.db
