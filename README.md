@@ -326,7 +326,7 @@ usage: chinadns-ng <options...>. the existing options are as follows:
  --group-dnl <paths>                  domain name list for the current group
  --group-upstream <upstreams>         upstream dns server for the current group
  --group-ipset <set4,set6>            add the ip of the current group to ipset
- -N, --no-ipv6 [rules]                rule: tag:<name>, ip:china, ip:non_china
+ -N, --no-ipv6 [rules]                tag:<name>[@ip:*], ip:china, ip:non_china
                                       if no rules, then filter all AAAA queries
  --filter-qtype <qtypes>              filter queries with the given qtype (u16)
  --cache <size>                       enable dns caching, size 0 means disabled
@@ -505,13 +505,25 @@ group-upstream 192.168.1.1
 
 ### no-ipv6
 
-- `no-ipv6` 用于过滤 AAAA 查询（查询域名的 IPv6 地址），默认不设置此选项。
-  - 未给出规则时，过滤所有 AAAA 查询。
-  - 2024.04.13 版本起，规则有修改（**不兼容旧版**），多个规则使用逗号隔开：
-    - `tag:<name>`：按域名 tag 过滤，如 `tag:gfw`，支持自定义的 tag
-    - `ip:china`：若响应的 answer 中有 china IP，则过滤（空响应）
-    - `ip:non_china`：若响应的 answer 中有 non-china IP，则过滤（空响应）
-    - `ip:*` 规则的测试数据库由 `--ipset-name6` 选项提供，默认为 chnroute6
+- `no-ipv6` 过滤 AAAA 查询（查询域名的 IPv6 地址），默认不启用。
+  - 此选项可多次指定，选项参数为`过滤规则`。
+    - 如果没有选项参数，则表示过滤所有 AAAA 查询。
+    - 选项参数中可以有多条`过滤规则`，中间用逗号隔开。
+    - 被`过滤规则`匹配的查询将以 NODATA 形式进行响应。
+  - `过滤规则`的完整形式为`tag:域名组@ip:测试结果`。
+    - 每个域名组都有一个 AAAA 过滤器，不同域名组的过滤规则互相独立。
+    - `tag:域名组`是域名组选择器，表示`过滤条件`将要添加到哪个域名组中。
+    - `ip:测试结果`是`过滤条件`，若域名组中的查询符合其条件，则被“过滤”。
+    - 若未指定`tag:域名组@`部分，则该`过滤条件`将添加到每个域名组中。
+    - 若未指定`@ip:测试结果`部分，则该域名组的所有查询都将被“过滤”。
+  - `ip:测试结果`只有以下两种（二选一）：
+    - `ip:china`：若域名解析结果为 **大陆 IPv6 地址**，则“过滤”。
+    - `ip:non_china`：若域名解析结果为 **非大陆 IPv6 地址**，则“过滤”。
+    - IPv6 数据库由 `--ipset-name6` 选项提供，默认为 `chnroute6` (ipset)。
+  - 列举一些 `过滤规则`，以及对应的 AAAA 过滤效果：
+    - `tag:none`：过滤 none 域名组中 所有 AAAA 查询。
+    - `ip:non_china`：过滤 所有 域名组中 解析结果为 '非大陆 IPv6' 的 AAAA 查询。
+    - `tag:none@ip:non_china`：过滤 none 域名组中 解析结果为 '非大陆 IPv6' 的 AAAA 查询。
 
 ### filter-qtype
 
